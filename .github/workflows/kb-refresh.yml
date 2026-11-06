@@ -1,0 +1,46 @@
+name: 知识库同步
+
+# 每 3 小时抓一次探域知识库，写入云数据库。
+# 时间用 UTC，+8 小时后对应北京时间 02:05 / 05:05 / 08:05 / 11:05 / 14:05 / 17:05 / 20:05 / 23:05
+on:
+  schedule:
+    - cron: '5 */3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kb-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 抓取并写入云库
+        env:
+          TANYU_COOKIE: ${{ secrets.TANYU_COOKIE }}
+          WB_ENDPOINT: ${{ secrets.WB_ENDPOINT }}
+          WB_KEY: ${{ secrets.WB_KEY }}
+          WB_SHARECODE: ${{ secrets.WB_SHARECODE }}
+        run: |
+          node --version
+          node kb-worker.js
+
+      - name: 网络诊断（仅在失败时输出）
+        if: failure()
+        env:
+          WB_ENDPOINT: ${{ secrets.WB_ENDPOINT }}
+        run: |
+          echo "检查探域站点可达性："
+          curl -s -o /dev/null -w "agent.tanyuai.com HTTP %{http_code} 用时 %{time_total}s\n" https://agent.tanyuai.com/ || true
+          echo "检查云库可达性："
+          curl -s -o /dev/null -w "云库 HTTP %{http_code} 用时 %{time_total}s\n" "$WB_ENDPOINT" || true

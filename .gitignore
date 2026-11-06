@@ -1,0 +1,4 @@
+node_modules/
+run-local.sh
+*.log
+.DS_Store
