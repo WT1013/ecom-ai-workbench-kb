@@ -64,18 +64,37 @@ async function api(url, method, body) {
   return j;
 }
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/* 单页请求：返回空列表时重试，海内外网络抖动都能兜住 */
+async function fetchPage(body, tries) {
+  tries = tries || 3;
+  let last = null;
+  for (let i = 0; i < tries; i++) {
+    last = await api('/api/kbe/v1/knowledge-card/page', 'POST', body);
+    const list = ((last.data || {}).results) || [];
+    if (list.length) return last;
+    if (i < tries - 1) {
+      console.log('  第 ' + (i + 1) + ' 次返回空页，1.5 秒后重试');
+      await sleep(1500);
+    }
+  }
+  return last;
+}
+
 async function fetchAll() {
   const brief = await api('/api/gc/agent-personal/brief?searchValid=true');
   const shops = (brief.data || []).map(x => ({ thirdShopId: x.thirdShopId, shopName: x.shopName, platform: x.platform }));
   if (!shops.length) throw new Error('店铺映射为空，探域登录态可能已失效');
 
-  const base = { sortIfNew: true, pageSize: 100, searchView: 'KNOWLEDGE', spu: [], labels: [], type: 'SHOP' };
+  // pageSize 放大到 500：1056 张卡只需 3 页，少一次请求就少一次中断机会
+  const base = { sortIfNew: true, pageSize: 500, searchView: 'KNOWLEDGE', spu: [], labels: [], type: 'SHOP' };
   let cursor = null, cards = [], total = null, pages = 0, lastFirstId = null, guard = 0;
   const seen = new Set();
-  while (guard++ < 150) {
+  while (guard++ < 40) {
     const body = Object.assign({}, base);
     if (cursor) { body.lastUpdatedAt = cursor.t; body.lastId = cursor.id; }
-    const j = await api('/api/kbe/v1/knowledge-card/page', 'POST', body);
+    const j = await fetchPage(body);
     const d = j.data || {};
     if (total === null) total = d.total;
     const list = d.results || [];
@@ -104,6 +123,7 @@ async function fetchAll() {
     if (total && cards.length >= total) break;
     const last = list[list.length - 1];
     cursor = { t: toSec(last.lastUpdatedAt), id: last.id };
+    await sleep(300);
   }
   if (!cards.length) throw new Error('未抓到任何知识卡');
   if (total && cards.length < total * 0.9) {
@@ -319,7 +339,17 @@ function buildPayload(f) {
   if (!ENDPOINT || !KEY) die('缺少 WB_ENDPOINT / WB_KEY（云库地址与密钥）');
 
   console.log('· 抓取探域知识库…');
-  const f = await fetchAll();
+  let f = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      f = await fetchAll();
+      break;
+    } catch (e) {
+      if (attempt === 2) throw e;
+      console.log('  第 ' + attempt + ' 次抓取失败：' + e.message + '；5 秒后整体重试一次');
+      await sleep(5000);
+    }
+  }
   const now = new Date();
   const t = bj(now);
   console.log('  卡片=' + f.cards.length + ' 接口total=' + f.apiTotal + ' 页=' + f.pages +
